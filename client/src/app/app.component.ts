@@ -4,8 +4,11 @@ import { AzureClient, AzureClientProps, AzureContainerServices, AzureRemoteConne
 import { InsecureTokenProvider } from '@fluidframework/test-client-utils';
 import { v4 as Guid } from 'uuid';
 import { getFluidContainer } from 'src/azure-fluid-configuration/fluid-relay-connection-factory';
-import { Connector, ConnectorModel, DiagramComponent, FlowShapeModel, ICollectionChangeEventArgs, IDragEnterEventArgs, MarginModel, NodeModel, OrthogonalSegmentModel, PaletteModel, PointPortModel, SnapSettingsModel, StrokeStyleModel, SymbolInfo, TextStyleModel } from '@syncfusion/ej2-angular-diagrams';
+import { cloneObject, Connector, ConnectorModel, DiagramComponent, FlowShapeModel, ICollectionChangeEventArgs, IDragEnterEventArgs, MarginModel, NodeModel, OrthogonalSegmentModel, PaletteModel, PointPortModel, SnapSettingsModel, StrokeStyleModel, SymbolInfo, TextStyleModel } from '@syncfusion/ej2-angular-diagrams';
 import { paletteIconClick } from 'script/diagram-common';
+
+import {parse, stringify, toJSON, fromJSON} from 'flatted';
+import { element } from 'protractor';
 
 interface TimestampDataModel { time: string | undefined; }
 
@@ -30,45 +33,94 @@ export class AppComponent {
   @ViewChild('diagram') public diagram: DiagramComponent;
 
   sharedTimestamp: SharedMap | undefined;
+  sharedNodes: SharedMap | undefined;
+  sharedConnectors: SharedMap | undefined;
+  localNodes: Record<string, NodeModel> = {}
   localTimestamp: TimestampDataModel | undefined;
 
   updateLocalTimestamp: (() => void) | undefined;
+  updateLocalNodes: ((...args) => void) | undefined;
 
   constructor(private cdr: ChangeDetectorRef) { }
 
   async ngOnInit() {
-    this.sharedTimestamp = await this.getFluidData();
+    const initialObjects = await this.getFluidData();
+    //this.sharedTimestamp = initialObjects.sharedTimestamp;
+    this.sharedNodes = initialObjects.sharedNodes;
+    // this.sharedConnectors = initialObjects.sharedConnectors;
     this.syncData();
   }
 
   async getFluidData() {
     const containerSchema = {
-      initialObjects: { sharedTimestamp: SharedMap }
+      initialObjects: {
+        sharedNodes: SharedMap,
+        sharedConnectors: SharedMap,
+      }
     };
 
     // TODO 2: Get the container from the Fluid service.
     let container = await getFluidContainer(containerSchema);
     // TODO 3: Return the Fluid timestamp object.
-    return container.initialObjects.sharedTimestamp as SharedMap;
+    return container.initialObjects;
   }
 
   syncData() {
-    if (this.sharedTimestamp) {
-      this.updateLocalTimestamp = () => {
-        this.localTimestamp = {
-          time: this.sharedTimestamp!.get("time")
-        }
-        this.cdr.detectChanges();
-      };
-      this.updateLocalTimestamp();
+    if (this.sharedNodes) {
+      const nodes = Array.from(this.sharedNodes.values());
+      for (const node of nodes) {
+        this.localNodes[node.id] = node;
+        this.diagram.addNode(node);
+      }
 
-      this.sharedTimestamp!.on("valueChanged", this.updateLocalTimestamp!)
+
+      this.updateLocalNodes = (e?) => {
+        const diff = this.getDifference();
+        if (diff.length > 0) {
+          // console.log(this.localNodes);
+          // console.log(Array.from(this.sharedNodes.values()));
+
+          for (const id of diff) {
+            const node = this.sharedNodes.get(id);
+            // console.log(node);
+            this.diagram.addNode(node);
+            this.localNodes[id] = node;
+          }
+        }
+
+        this.cdr.detectChanges();
+
+        // if (e) {
+
+        //   if (!this.localNodes[e.key]) {
+        //     const node = this.sharedNodes.get(e.key);
+        //     this.diagram.addNode(node);
+        //     this.localNodes[e.key] = node;
+        //   }
+        //   this.cdr.detectChanges();
+        // }
+
+      };
+      this.updateLocalNodes()
+      this.sharedNodes!.on("valueChanged", this.updateLocalNodes!);
     }
   }
 
-  onButtonClick() {
-    this.sharedTimestamp.set("time", Date.now().toString());
+  getDifference(): string[] {
+    const sharedNodesIds = (Array.from(this.sharedNodes!.values()) as NodeModel[]).map(n => n.id);
+    const localNodesIds = Object.values(this.localNodes).map(n => n.id);
+
+    const diff = sharedNodesIds.length > localNodesIds.length ?
+      sharedNodesIds.filter(e => !localNodesIds.includes(e)) :
+      localNodesIds.filter(e => !sharedNodesIds.includes(e))
+
+    return diff;
+
   }
+
+  // onButtonClick() {
+  //   this.sharedTimestamp.set("time", Date.now().toString());
+  // }
 
   ngOnDestroy() {
     // Delete handler registration when the Angular App component is dismounted.
@@ -76,7 +128,7 @@ export class AppComponent {
   }
 
   destroyListeners(): void {
-    this.sharedTimestamp!.off("valueChanged", this.updateLocalTimestamp!);
+    this.sharedNodes!.off("valueChanged", this.updateLocalNodes!);
   }
 
   public terminator: FlowShapeModel = { type: 'Flow', shape: 'Terminator' };
@@ -277,8 +329,31 @@ export class AppComponent {
   }
 
   onCollectionChange(args: ICollectionChangeEventArgs): void {
-    console.log(args)
+    if (args.state === 'Changed') {
+      const elementId = JSON.stringify((args.element as any)?.properties?.id)
+      const element = cloneObject(args.element)
+      console.log(element)
+      if ((args.element as any).propName === 'nodes') {
+        if (args.type === "Addition") {
+          this.sharedNodes.set(elementId, element)
+        }
+        else if (args.type === "Removal") {
+          this.sharedNodes.delete(elementId)
+        }
+      } else {
+        if (args.type === "Addition")
+          this.sharedConnectors.set(elementId, element)
+        else if (args.type === "Removal")
+          this.sharedConnectors.delete(elementId)
+      }
+    }
   }
+}
+
+function pick<T, K extends keyof T>(obj: T, ...keys: K[]) {
+  const result = {} as T;
+  for(const key of keys) result[key] = obj[key];
+  return result;
 }
 
 function getPorts(obj: NodeModel): PointPortModel[] {
