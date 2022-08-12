@@ -1,16 +1,13 @@
 import { ChangeDetectorRef, Component, ViewChild } from '@angular/core';
-import { IFluidContainer, SharedMap } from 'fluid-framework';
-import { AzureClient, AzureClientProps, AzureContainerServices, AzureRemoteConnectionConfig, IAzureAudience } from '@fluidframework/azure-client';
+import { SharedMap } from 'fluid-framework';
+import { AzureClientProps, AzureRemoteConnectionConfig } from '@fluidframework/azure-client';
 import { InsecureTokenProvider } from '@fluidframework/test-client-utils';
 import { v4 as Guid } from 'uuid';
-import { getFluidContainer } from 'src/azure-fluid-configuration/fluid-relay-connection-factory';
-import { cloneObject, Connector, ConnectorModel, DiagramComponent, FlowShapeModel, ICollectionChangeEventArgs, IDragEnterEventArgs, MarginModel, NodeModel, OrthogonalSegmentModel, PaletteModel, PointPortModel, SnapSettingsModel, StrokeStyleModel, SymbolInfo, TextStyleModel } from '@syncfusion/ej2-angular-diagrams';
-import { paletteIconClick } from 'script/diagram-common';
-
-import {parse, stringify, toJSON, fromJSON} from 'flatted';
+import { cloneObject, Connector, ConnectorModel, DiagramComponent, FlowShapeModel, ICollectionChangeEventArgs, IDragEnterEventArgs, IDraggingEventArgs, IDropEventArgs, MarginModel, NodeModel, OrthogonalSegmentModel, PaletteModel, PointPortModel, SnapSettingsModel, StrokeStyleModel, SymbolInfo, TextStyleModel } from '@syncfusion/ej2-angular-diagrams';
+import { getFluidContainer } from '../azure-fluid-configuration/fluid-relay-connection-factory';
+import { paletteIconClick } from '../../script/diagram-common';
 import { element } from 'protractor';
 
-interface TimestampDataModel { time: string | undefined; }
 
 const config: AzureRemoteConnectionConfig = {
   tenantId: "93441424-441e-4f78-b02b-0acf9db06fb6",
@@ -32,20 +29,16 @@ export class AppComponent {
 
   @ViewChild('diagram') public diagram: DiagramComponent;
 
-  sharedTimestamp: SharedMap | undefined;
   sharedNodes: SharedMap | undefined;
   sharedConnectors: SharedMap | undefined;
   localNodes: Record<string, NodeModel> = {}
-  localTimestamp: TimestampDataModel | undefined;
 
-  updateLocalTimestamp: (() => void) | undefined;
   updateLocalNodes: ((...args) => void) | undefined;
 
   constructor(private cdr: ChangeDetectorRef) { }
 
   async ngOnInit() {
     const initialObjects = await this.getFluidData();
-    //this.sharedTimestamp = initialObjects.sharedTimestamp;
     this.sharedNodes = initialObjects.sharedNodes;
     // this.sharedConnectors = initialObjects.sharedConnectors;
     this.syncData();
@@ -67,48 +60,52 @@ export class AppComponent {
 
   syncData() {
     if (this.sharedNodes) {
-      const nodes = Array.from(this.sharedNodes.values());
+      const nodes = Array.from(this.sharedNodes.values()).map(i => cloneObject(i) as NodeModel);
       for (const node of nodes) {
+        this.diagram.addNode(node)
         this.localNodes[node.id] = node;
-        this.diagram.addNode(node);
       }
 
 
       this.updateLocalNodes = (e?) => {
-        const diff = this.getDifference();
-        if (diff.length > 0) {
-          // console.log(this.localNodes);
-          // console.log(Array.from(this.sharedNodes.values()));
-
-          for (const id of diff) {
-            const node = this.sharedNodes.get(id);
-            // console.log(node);
-            this.diagram.addNode(node);
-            this.localNodes[id] = node;
+        if (e) {
+          const diff = this.getNodeDifference();
+          if (diff.length > 0) {
+            const node = this.sharedNodes!.get(e.key) as NodeModel;
+            let localNode = this.localNodes[e.key]
+            if (node && !localNode && e.previousValue === undefined) {
+              console.log('add node')
+              this.diagram.addNode(node)
+              this.localNodes[node.id] = node;
+            } else if (e.previousValue !== undefined && node === undefined) {
+              console.log('delete node')
+              localNode = this.localNodes[e.previousValue.id]
+              if (localNode) {
+                this.diagram.remove(localNode)
+                this.localNodes[localNode.id] = null;
+              }
+            }
+          } else {
+            const nodeToUpdatePos = this.diagram.nodes.find(n => n.id === e.key);
+            const updatedNode = this.sharedNodes!.get(e.key) as NodeModel;
+            nodeToUpdatePos.offsetX = updatedNode.offsetX;
+            nodeToUpdatePos.offsetY = updatedNode.offsetY;
+            this.diagram.updateDiagramObject(nodeToUpdatePos, true, true);
+            this.localNodes[e.key] = updatedNode;
           }
         }
 
         this.cdr.detectChanges();
-
-        // if (e) {
-
-        //   if (!this.localNodes[e.key]) {
-        //     const node = this.sharedNodes.get(e.key);
-        //     this.diagram.addNode(node);
-        //     this.localNodes[e.key] = node;
-        //   }
-        //   this.cdr.detectChanges();
-        // }
-
       };
-      this.updateLocalNodes()
-      this.sharedNodes!.on("valueChanged", this.updateLocalNodes!);
+
+      this.updateLocalNodes(null);
+      this.sharedNodes!.on("valueChanged", this.updateLocalNodes!)
     }
   }
 
-  getDifference(): string[] {
+  getNodeDifference(): string[] {
     const sharedNodesIds = (Array.from(this.sharedNodes!.values()) as NodeModel[]).map(n => n.id);
-    const localNodesIds = Object.values(this.localNodes).map(n => n.id);
+    const localNodesIds = Object.values(this.localNodes).filter(i => !!i).map(n => n.id);
 
     const diff = sharedNodesIds.length > localNodesIds.length ?
       sharedNodesIds.filter(e => !localNodesIds.includes(e)) :
@@ -118,9 +115,52 @@ export class AppComponent {
 
   }
 
-  // onButtonClick() {
-  //   this.sharedTimestamp.set("time", Date.now().toString());
-  // }
+  onDropElement(args: IDropEventArgs): void {
+    const elementId = (args.element as any)?.properties?.id
+    const element = cloneObject(args.element)
+    if ((args.element as any).propName === 'nodes') {
+      this.sharedNodes!.set(elementId, element)
+    } else {
+      this.sharedConnectors!.set(elementId, element)
+    }
+
+    this.sharedNodes.emit("addNode", {elementId, element})
+
+  }
+
+  onPositionChange(args: IDraggingEventArgs): void {
+    if (args.state === 'Completed') {
+      let element;
+      let elementId;
+      if ((args.source as any).propName === 'nodes') {
+        elementId = (args.source as any)?.id;
+        element = cloneObject(args.source);
+        this.sharedNodes.emit("positionChanged", {elementId, element});
+        this.sharedNodes!.set(elementId, element);
+      } else if ((args.source as any).propName === 'selectedItems') {
+        const nodes = args.source.nodes;
+        nodes.forEach(node => {
+          this.sharedNodes!.set(node.id, cloneObject(node));
+        })
+      }
+
+
+    }
+  }
+
+  onDeleteElement(args: ICollectionChangeEventArgs): void {
+    if (args.type === 'Removal' && args.state === 'Changed') {
+      const elementId = (args.element as any)?.properties?.id
+      if ((args.element as any).propName === 'nodes') {
+        if (this.sharedNodes!.has(elementId)) {
+          this.sharedNodes!.delete(elementId);
+        }
+      } else {
+        this.sharedConnectors!.delete(elementId);
+      }
+    }
+  }
+
 
   ngOnDestroy() {
     // Delete handler registration when the Angular App component is dismounted.
@@ -327,33 +367,6 @@ export class AppComponent {
   public diagramCreate(args: Object): void {
     paletteIconClick();
   }
-
-  onCollectionChange(args: ICollectionChangeEventArgs): void {
-    if (args.state === 'Changed') {
-      const elementId = JSON.stringify((args.element as any)?.properties?.id)
-      const element = cloneObject(args.element)
-      console.log(element)
-      if ((args.element as any).propName === 'nodes') {
-        if (args.type === "Addition") {
-          this.sharedNodes.set(elementId, element)
-        }
-        else if (args.type === "Removal") {
-          this.sharedNodes.delete(elementId)
-        }
-      } else {
-        if (args.type === "Addition")
-          this.sharedConnectors.set(elementId, element)
-        else if (args.type === "Removal")
-          this.sharedConnectors.delete(elementId)
-      }
-    }
-  }
-}
-
-function pick<T, K extends keyof T>(obj: T, ...keys: K[]) {
-  const result = {} as T;
-  for(const key of keys) result[key] = obj[key];
-  return result;
 }
 
 function getPorts(obj: NodeModel): PointPortModel[] {
