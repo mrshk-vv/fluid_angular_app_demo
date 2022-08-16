@@ -3,10 +3,9 @@ import { SharedMap } from 'fluid-framework';
 import { AzureClientProps, AzureRemoteConnectionConfig } from '@fluidframework/azure-client';
 import { InsecureTokenProvider } from '@fluidframework/test-client-utils';
 import { v4 as Guid } from 'uuid';
-import { cloneObject, Connector, ConnectorModel, DiagramComponent, FlowShapeModel, ICollectionChangeEventArgs, IDragEnterEventArgs, IDraggingEventArgs, IDropEventArgs, MarginModel, NodeModel, OrthogonalSegmentModel, PaletteModel, PointPortModel, SnapSettingsModel, StrokeStyleModel, SymbolInfo, TextStyleModel } from '@syncfusion/ej2-angular-diagrams';
+import { cloneObject, Connector, ConnectorModel, DiagramComponent, FlowShapeModel, ICollectionChangeEventArgs, IConnectionChangeEventArgs, IDragEnterEventArgs, IDraggingEventArgs, IDropEventArgs, IEndChangeEventArgs, IPropertyChangeEventArgs, ITextEditEventArgs, MarginModel, NodeModel, OrthogonalSegmentModel, PaletteModel, PointPortModel, ShapeAnnotationModel, SnapSettingsModel, StrokeStyleModel, SymbolInfo, TextModel, TextStyleModel } from '@syncfusion/ej2-angular-diagrams';
 import { getFluidContainer } from '../azure-fluid-configuration/fluid-relay-connection-factory';
 import { paletteIconClick } from '../../script/diagram-common';
-import { element } from 'protractor';
 
 
 const config: AzureRemoteConnectionConfig = {
@@ -32,15 +31,17 @@ export class AppComponent {
   sharedNodes: SharedMap | undefined;
   sharedConnectors: SharedMap | undefined;
   localNodes: Record<string, NodeModel> = {}
+  localConnectors: Record<string, ConnectorModel> = {}
 
   updateLocalNodes: ((...args) => void) | undefined;
+  updateLocalConnectors: ((...args) => void) | undefined;
 
   constructor(private cdr: ChangeDetectorRef) { }
 
   async ngOnInit() {
     const initialObjects = await this.getFluidData();
     this.sharedNodes = initialObjects.sharedNodes;
-    // this.sharedConnectors = initialObjects.sharedConnectors;
+    this.sharedConnectors = initialObjects.sharedConnectors;
     this.syncData();
   }
 
@@ -61,9 +62,15 @@ export class AppComponent {
   syncData() {
     if (this.sharedNodes) {
       const nodes = Array.from(this.sharedNodes.values()).map(i => cloneObject(i) as NodeModel);
+      const connectors = Array.from(this.sharedConnectors.values()).map(i => cloneObject(i) as ConnectorModel);
       for (const node of nodes) {
         this.diagram.addNode(node)
         this.localNodes[node.id] = node;
+      }
+
+      for (const connector of connectors) {
+        this.diagram.addConnector(connector)
+        this.localConnectors[connector.id] = connector;
       }
 
 
@@ -78,16 +85,18 @@ export class AppComponent {
               this.diagram.addNode(node)
               this.localNodes[node.id] = node;
             } else if (e.previousValue !== undefined && node === undefined) {
-              console.log('delete node')
               localNode = this.localNodes[e.previousValue.id]
               if (localNode) {
+                console.log('delete node')
                 this.diagram.remove(localNode)
                 this.localNodes[localNode.id] = null;
               }
             }
           } else {
+            console.log('update node')
             const nodeToUpdatePos = this.diagram.nodes.find(n => n.id === e.key);
             const updatedNode = this.sharedNodes!.get(e.key) as NodeModel;
+            nodeToUpdatePos.annotations = updatedNode.annotations;
             nodeToUpdatePos.offsetX = updatedNode.offsetX;
             nodeToUpdatePos.offsetY = updatedNode.offsetY;
             this.diagram.updateDiagramObject(nodeToUpdatePos, true, true);
@@ -98,8 +107,44 @@ export class AppComponent {
         this.cdr.detectChanges();
       };
 
+      this.updateLocalConnectors = (e?) => {
+        if (e) {
+          const diff = this.getConnectorDifference();
+          if (diff.length > 0) {
+            const connector = this.sharedConnectors!.get(e.key) as ConnectorModel;
+            let localConnector = this.localConnectors[e.key]
+            if (connector && !localConnector && e.previousValue === undefined) {
+              console.log('add connector')
+              this.diagram.addConnector(connector)
+              this.localConnectors[connector.id] = connector;
+            } else if (e.previousValue !== undefined && connector === undefined) {
+              localConnector = this.localConnectors[e.previousValue.id]
+              if (localConnector) {
+                console.log('delete connector')
+                this.diagram.remove(localConnector)
+                this.localConnectors[localConnector.id] = null;
+              }
+            }
+          } else {
+            console.log('update connector')
+            const connectorToUpdatePos = this.diagram.connectors.find(n => n.id === e.key);
+            const updatedConnector = this.sharedConnectors!.get(e.key) as ConnectorModel;
+            connectorToUpdatePos.targetPoint = updatedConnector.targetPoint;
+            connectorToUpdatePos.sourcePoint = updatedConnector.sourcePoint;
+            connectorToUpdatePos.sourcePortID = updatedConnector.sourcePortID;
+            connectorToUpdatePos.targetPortID = updatedConnector.targetPortID;
+            this.diagram.updateDiagramObject(connectorToUpdatePos, true, true);
+            this.localConnectors[e.key] = updatedConnector;
+          }
+        }
+
+        this.cdr.detectChanges();
+      }
+
       this.updateLocalNodes(null);
+      this.updateLocalConnectors(null);
       this.sharedNodes!.on("valueChanged", this.updateLocalNodes!)
+      this.sharedConnectors.on("valueChanged", this.updateLocalConnectors!)
     }
   }
 
@@ -115,17 +160,38 @@ export class AppComponent {
 
   }
 
+  getConnectorDifference(): string[] {
+    const sharedConnectorsIds = (Array.from(this.sharedConnectors!.values()) as ConnectorModel[]).map(n => n.id);
+    const localConnectorsIds = Object.values(this.localConnectors).filter(i => !!i).map(n => n.id);
+
+    const diff = sharedConnectorsIds.length > localConnectorsIds.length ?
+      sharedConnectorsIds.filter(e => !localConnectorsIds.includes(e)) :
+      localConnectorsIds.filter(e => !sharedConnectorsIds.includes(e))
+
+    return diff;
+  }
+
   onDropElement(args: IDropEventArgs): void {
     const elementId = (args.element as any)?.properties?.id
     const element = cloneObject(args.element)
     if ((args.element as any).propName === 'nodes') {
       this.sharedNodes!.set(elementId, element)
-    } else {
+    } else if((args.element as any).propName === 'connectors') {
       this.sharedConnectors!.set(elementId, element)
     }
+  }
 
-    this.sharedNodes.emit("addNode", {elementId, element})
-
+  onTextChange(args: ITextEditEventArgs): void {
+    let element;
+    let elementId;
+    elementId = (args.element as any)?.id;
+    element = cloneObject(args.element)
+    if ((args.element as any).propName === 'nodes') {
+      (element as NodeModel).annotations[0] = cloneObject(args.annotation) as ShapeAnnotationModel;
+      this.sharedNodes!.set(elementId, element);
+    } else if ((args.element as any).propName === 'connectors') {
+      this.sharedConnectors!.set(elementId, element)
+    }
   }
 
   onPositionChange(args: IDraggingEventArgs): void {
@@ -135,7 +201,6 @@ export class AppComponent {
       if ((args.source as any).propName === 'nodes') {
         elementId = (args.source as any)?.id;
         element = cloneObject(args.source);
-        this.sharedNodes.emit("positionChanged", {elementId, element});
         this.sharedNodes!.set(elementId, element);
       } else if ((args.source as any).propName === 'selectedItems') {
         const nodes = args.source.nodes;
@@ -143,10 +208,21 @@ export class AppComponent {
           this.sharedNodes!.set(node.id, cloneObject(node));
         })
       }
-
-
     }
   }
+
+  onConnectorChange(args: IConnectionChangeEventArgs): void {
+    this.sharedConnectors.set(args.connector.id, cloneObject(args.connector));
+  }
+
+  onSourcePointChange(args: IEndChangeEventArgs): void {
+    this.sharedConnectors.set(args.connector.id, cloneObject(args.connector));
+  }
+
+  onTargetPointChange(args: IEndChangeEventArgs): void {
+    this.sharedConnectors.set(args.connector.id, cloneObject(args.connector));
+  }
+
 
   onDeleteElement(args: ICollectionChangeEventArgs): void {
     if (args.type === 'Removal' && args.state === 'Changed') {
@@ -156,7 +232,9 @@ export class AppComponent {
           this.sharedNodes!.delete(elementId);
         }
       } else {
-        this.sharedConnectors!.delete(elementId);
+        if (this.sharedConnectors!.has(elementId)) {
+          this.sharedConnectors!.delete(elementId);
+        }
       }
     }
   }
@@ -169,6 +247,7 @@ export class AppComponent {
 
   destroyListeners(): void {
     this.sharedNodes!.off("valueChanged", this.updateLocalNodes!);
+    this.sharedConnectors!.off("valueChanged", this.updateLocalConnectors!);
   }
 
   public terminator: FlowShapeModel = { type: 'Flow', shape: 'Terminator' };
